@@ -2,6 +2,8 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
+const authenticateToken = require('../middleware/authMiddleware');
+const authorizeRoles = require('../middleware/roleMiddleware');
 
 // GET all published notices
 router.get('/', async (req, res) => {
@@ -47,12 +49,367 @@ router.get('/', async (req, res) => {
     }
 });
 
+
+// POST /api/notices/submit
+// Only societies can submit notices
+
+router.post(
+    '/submit',
+    authenticateToken,
+    authorizeRoles('Society'),
+    async (req, res) => {
+
+        const {
+            title,
+            bodyContent,
+            priority,
+            categoryId,
+            expiryDate,
+            targets
+        } = req.body;
+
+        // Validate required fields
+        if (
+            !title ||
+            !bodyContent ||
+            !categoryId ||
+            !Array.isArray(targets) ||
+            targets.length === 0
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'Required fields or notice targets are missing'
+            });
+        }
+
+        const connection = await pool.getConnection();
+
+        try {
+            await connection.beginTransaction();
+
+            // Insert notice
+            const [noticeResult] = await connection.query(
+                `INSERT INTO NOTICE
+                (Title, Body_Content, Priority, Status,
+                 Created_By, Category_ID, Expiry_Date)
+                VALUES (?, ?, ?, 'Pending', ?, ?, ?)`,
+                [
+                    title,
+                    bodyContent,
+                    priority || 'Medium',
+                    req.user.userId,
+                    categoryId,
+                    expiryDate || null
+                ]
+            );
+
+            const noticeId = noticeResult.insertId;
+
+            // Insert department and semester targets
+            for (const target of targets) {
+
+                await connection.query(
+                    `INSERT INTO NOTICE_TARGET
+                    (Notice_ID, Dept_ID, Target_Semester)
+                    VALUES (?, ?, ?)`,
+                    [
+                        noticeId,
+                        target.deptId ?? null,
+                        target.semester ?? null
+                    ]
+                );
+            }
+
+            await connection.commit();
+
+            res.status(201).json({
+                success: true,
+                message: 'Notice submitted for approval',
+                noticeId: noticeId,
+                status: 'Pending'
+            });
+
+        } catch (error) {
+
+            await connection.rollback();
+
+            console.error('Notice submission error:', error);
+
+            res.status(500).json({
+                success: false,
+                message: 'Could not submit notice'
+            });
+
+        } finally {
+            connection.release();
+        }
+    }
+);
+
+
+router.get(
+    '/pending',
+    authenticateToken,
+    authorizeRoles('Admin', 'HOD'),
+    async (req, res) => {
+
+        try {
+            let query = `
+                SELECT
+                    n.Notice_ID,
+                    n.Title,
+                    n.Body_Content,
+                    n.Priority,
+                    n.Status,
+                    n.Created_By,
+                    u.Full_Name AS Submitted_By,
+                    u.Role AS Submitter_Role,
+                    c.Category_Name,
+                    n.Expiry_Date,
+                    GROUP_CONCAT(
+                        DISTINCT CONCAT(
+                            COALESCE(d.Dept_Name, 'All Departments'),
+                            ' - ',
+                            COALESCE(nt.Target_Semester, 'All Semesters')
+                        )
+                        SEPARATOR ', '
+                    ) AS Targets
+                FROM NOTICE n
+                JOIN \`USER\` u ON n.Created_By = u.User_ID
+                JOIN CATEGORY c ON n.Category_ID = c.Category_ID
+                LEFT JOIN NOTICE_TARGET nt ON n.Notice_ID = nt.Notice_ID
+                LEFT JOIN DEPARTMENT d ON nt.Dept_ID = d.Dept_ID
+                WHERE n.Status = 'Pending'
+            `;
+
+            const params = [];
+
+            // HOD sees notices targeting their department.
+            if (req.user.role === 'HOD') {
+                query += `
+                    AND EXISTS (
+                        SELECT 1
+                        FROM NOTICE_TARGET nt2
+                        JOIN FACULTY_PROFILE fp
+                            ON fp.Dept_ID = nt2.Dept_ID
+                        WHERE nt2.Notice_ID = n.Notice_ID
+                        AND fp.Faculty_ID = ?
+                    )
+                `;
+                params.push(req.user.userId);
+            }
+
+            query += `
+                GROUP BY n.Notice_ID
+                ORDER BY n.Notice_ID DESC
+            `;
+
+            const [notices] = await pool.query(query, params);
+
+            res.json({
+                success: true,
+                count: notices.length,
+                notices
+            });
+
+        } catch (error) {
+            console.error('Pending notices error:', error);
+
+            res.status(500).json({
+                success: false,
+                message: 'Could not retrieve pending notices'
+            });
+        }
+    }
+);
+
+
+
+router.put(
+    '/:noticeId/approve',
+    authenticateToken,
+    authorizeRoles('Admin', 'HOD'),
+    async (req, res) => {
+
+        const { noticeId } = req.params;
+
+        try {
+            let sql = `
+                UPDATE NOTICE n
+                SET
+                    n.Status = 'Published',
+                    n.Approved_By = ?,
+                    n.Approved_At = NOW(),
+                    n.Publish_Date = NOW()
+                WHERE n.Notice_ID = ?
+                AND n.Status = 'Pending'
+            `;
+
+            const params = [req.user.userId, noticeId];
+
+            // HOD can approve only notices exclusively
+            // targeted to their own department.
+            if (req.user.role === 'HOD') {
+
+                sql += `
+                    AND EXISTS (
+                        SELECT 1
+                        FROM FACULTY_PROFILE fp
+                        WHERE fp.Faculty_ID = ?
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM NOTICE_TARGET nt
+                            WHERE nt.Notice_ID = n.Notice_ID
+                            AND (
+                                nt.Dept_ID IS NULL
+                                OR nt.Dept_ID <> fp.Dept_ID
+                            )
+                        )
+                    )
+                    AND EXISTS (
+                        SELECT 1
+                        FROM NOTICE_TARGET nt
+                        JOIN FACULTY_PROFILE fp
+                            ON nt.Dept_ID = fp.Dept_ID
+                        WHERE nt.Notice_ID = n.Notice_ID
+                        AND fp.Faculty_ID = ?
+                    )
+                `;
+
+                params.push(req.user.userId, req.user.userId);
+            }
+
+            const [result] = await pool.query(sql, params);
+
+            if (result.affectedRows === 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Notice not found, already processed, or you are not authorised to approve it'
+                });
+            }
+
+            res.json({
+                success: true,
+                message: 'Notice approved and published successfully',
+                noticeId: Number(noticeId)
+            });
+
+        } catch (error) {
+            console.error('Notice approval error:', error);
+
+            res.status(500).json({
+                success: false,
+                message: 'Could not approve notice'
+            });
+        }
+    }
+);
+
+
+router.put(
+    '/:noticeId/reject',
+    authenticateToken,
+    authorizeRoles('Admin', 'HOD'),
+    async (req, res) => {
+
+        const { noticeId } = req.params;
+        const { reason } = req.body;
+
+        if (!reason || !reason.trim()) {
+            return res.status(400).json({
+                success: false,
+                message: 'Rejection reason is required'
+            });
+        }
+
+        try {
+            let sql = `
+                UPDATE NOTICE n
+                SET
+                    n.Status = 'Rejected',
+                    n.Rejection_Reason = ?
+                WHERE n.Notice_ID = ?
+                AND n.Status = 'Pending'
+            `;
+
+            const params = [reason.trim(), noticeId];
+
+            // HOD can reject only notices targeting their department
+            if (req.user.role === 'HOD') {
+
+                sql += `
+                    AND EXISTS (
+                        SELECT 1
+                        FROM FACULTY_PROFILE fp
+                        WHERE fp.Faculty_ID = ?
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM NOTICE_TARGET nt
+                            WHERE nt.Notice_ID = n.Notice_ID
+                            AND (
+                                nt.Dept_ID IS NULL
+                                OR nt.Dept_ID <> fp.Dept_ID
+                            )
+                        )
+                    )
+                    AND EXISTS (
+                        SELECT 1
+                        FROM NOTICE_TARGET nt
+                        JOIN FACULTY_PROFILE fp
+                            ON nt.Dept_ID = fp.Dept_ID
+                        WHERE nt.Notice_ID = n.Notice_ID
+                        AND fp.Faculty_ID = ?
+                    )
+                `;
+
+                params.push(req.user.userId, req.user.userId);
+            }
+
+            const [result] = await pool.query(sql, params);
+
+            if (result.affectedRows === 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Notice not found, already processed, or you are not authorised to reject it'
+                });
+            }
+
+            res.json({
+                success: true,
+                message: 'Notice rejected successfully',
+                noticeId: Number(noticeId)
+            });
+
+        } catch (error) {
+            console.error('Notice rejection error:', error);
+
+            res.status(500).json({
+                success: false,
+                message: 'Could not reject notice'
+            });
+        }
+    }
+);
+
+
 module.exports = router;
 
 
 
 // GET notices relevant to a particular student
-router.get('/student/:studentId', async (req, res) => {
+router.get('/student/:studentId', authenticateToken, async (req, res) => {
+
+    // Students can only access their own notices
+    if (
+    req.user.role === 'Student' &&
+    req.user.userId !== Number(req.params.studentId)
+    ) {
+    return res.status(403).json({
+        success: false,
+        message: 'You are not authorized to access these notices'
+    });
+    }
+
     try {
         const studentId = req.params.studentId;
 
