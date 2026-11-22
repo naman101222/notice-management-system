@@ -3,8 +3,6 @@ const express = require('express');
 const pool = require('./config/db');
 const noticeRoutes = require('./routes/noticeRoutes');
 const authRoutes = require('./routes/authRoutes');
-const authenticateToken = require('./middleware/authMiddleware');
-const authorizeRoles = require('./middleware/roleMiddleware');
 const userRoutes = require('./routes/userRoutes');
 const cors = require('cors');
 
@@ -25,18 +23,6 @@ app.get('/', (req, res) => {
     res.send('Campus Notice Management System API is running!');
 });
 
-app.get(
-    '/api/admin/test',
-    authenticateToken,
-    authorizeRoles('Admin'),
-    (req, res) => {
-        res.json({
-            success: true,
-            message: 'Welcome Admin!',
-            user: req.user
-        });
-    }
-);
 
 app.get('/api/health', async (req, res) => {
     try {

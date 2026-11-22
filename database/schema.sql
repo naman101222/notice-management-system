@@ -27,6 +27,7 @@ CREATE TABLE `USER` (
     Password_Hash VARCHAR(255) NOT NULL,
     Role ENUM('Admin', 'HOD', 'Faculty', 'Student', 'Society')
         NOT NULL,
+    Is_Active BOOLEAN NOT NULL DEFAULT TRUE,
     Created_At TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

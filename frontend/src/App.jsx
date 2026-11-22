@@ -1,8 +1,9 @@
-
 import { useState } from "react";
 import StudentDashboard from "./components/StudentDashboard";
 import AdminDashboard from "./components/AdminDashboard";
 import HODDashboard from "./components/HODDashboard";
+import SocietyDashboard from "./components/societyDashboard";
+import FacultyDashboard from "./components/FacultyDashboard";
 import api from "./services/api";
 import "./App.css";
 
@@ -36,7 +37,7 @@ function App() {
       setUser(user);
     } catch (err) {
       setError(
-        err.response?.data?.message || "Unable to connect to the server"
+        err.response?.data?.message || "Unable to connect to the server",
       );
     } finally {
       setLoading(false);
@@ -54,34 +55,28 @@ function App() {
 
   // ADMIN DASHBOARD
   if (user?.role === "Admin") {
-    return (
-      <AdminDashboard
-        user={user}
-        onLogout={handleLogout}
-      />
-    );
+    return <AdminDashboard user={user} onLogout={handleLogout} />;
   }
 
   // STUDENT DASHBOARD
   if (user?.role === "Student") {
-    return (
-      <StudentDashboard
-        user={user}
-        onLogout={handleLogout}
-      />
-    );
+    return <StudentDashboard user={user} onLogout={handleLogout} />;
   }
 
-
   // HOD DASHBOARD
-if (user?.role === "HOD") {
-  return (
-    <HODDashboard
-      user={user}
-      onLogout={handleLogout}
-    />
-  );
-}
+  if (user?.role === "HOD") {
+    return <HODDashboard user={user} onLogout={handleLogout} />;
+  }
+  //society dashboard
+  if (user?.role === "Society") {
+    return <SocietyDashboard user={user} onLogout={handleLogout} />;
+  }
+
+  //faculty dashboard
+  if (user?.role === "Faculty") {
+    return <FacultyDashboard user={user} onLogout={handleLogout} />;
+  }
+
   // Temporary dashboard for other roles
   if (user) {
     return (
@@ -91,14 +86,18 @@ if (user?.role === "HOD") {
 
           <h1>Welcome, {user.name}!</h1>
 
-          <p>
-            You are logged in to Campus Notice Management System.
-          </p>
+          <p>You are logged in to Campus Notice Management System.</p>
 
           <div className="user-details">
-            <p><strong>Email:</strong> {user.email}</p>
-            <p><strong>Role:</strong> {user.role}</p>
-            <p><strong>User ID:</strong> {user.userId}</p>
+            <p>
+              <strong>Email:</strong> {user.email}
+            </p>
+            <p>
+              <strong>Role:</strong> {user.role}
+            </p>
+            <p>
+              <strong>User ID:</strong> {user.userId}
+            </p>
           </div>
 
           <button onClick={handleLogout} className="logout-btn">
@@ -113,7 +112,6 @@ if (user?.role === "HOD") {
   return (
     <div className="login-page">
       <div className="login-container">
-
         <div className="login-left">
           <div className="brand">
             <div className="logo">
@@ -137,18 +135,14 @@ if (user?.role === "HOD") {
             </p>
           </div>
 
-          <div className="footer-text">
-            Campus Notice Management System
-          </div>
+          <div className="footer-text">Campus Notice Management System</div>
         </div>
 
         <div className="login-right">
           <form onSubmit={handleLogin}>
             <h2>Welcome back</h2>
 
-            <p className="subtitle">
-              Sign in to access your campus portal.
-            </p>
+            <p className="subtitle">Sign in to access your campus portal.</p>
 
             <label>Email Address</label>
             <input
@@ -168,15 +162,9 @@ if (user?.role === "HOD") {
               required
             />
 
-            {error && (
-              <div className="error-message">{error}</div>
-            )}
+            {error && <div className="error-message">{error}</div>}
 
-            <button
-              type="submit"
-              className="login-btn"
-              disabled={loading}
-            >
+            <button type="submit" className="login-btn" disabled={loading}>
               {loading ? "Signing in..." : "Sign In"}
             </button>
 
@@ -186,7 +174,6 @@ if (user?.role === "HOD") {
             </p>
           </form>
         </div>
-
       </div>
     </div>
   );

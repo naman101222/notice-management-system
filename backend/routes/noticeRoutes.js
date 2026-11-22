@@ -56,7 +56,7 @@ router.get('/', async (req, res) => {
 router.post(
     '/submit',
     authenticateToken,
-    authorizeRoles('Society'),
+    authorizeRoles('Society','Faculty'),
     async (req, res) => {
 
         const {
@@ -81,6 +81,36 @@ router.post(
                 message: 'Required fields or notice targets are missing'
             });
         }
+
+        // Faculty can only target their own department
+if (req.user.role === 'Faculty') {
+    const [faculty] = await pool.query(
+        `SELECT Dept_ID
+         FROM FACULTY_PROFILE
+         WHERE Faculty_ID = ?`,
+        [req.user.userId]
+    );
+
+    if (faculty.length === 0) {
+        return res.status(403).json({
+            success: false,
+            message: 'Faculty profile not found'
+        });
+    }
+
+    const facultyDeptId = faculty[0].Dept_ID;
+
+    const invalidTarget = targets.some(
+        target => Number(target.deptId) !== facultyDeptId
+    );
+
+    if (invalidTarget) {
+        return res.status(403).json({
+            success: false,
+            message: 'Faculty can only submit notices for their own department'
+        });
+    }
+}
 
         const connection = await pool.getConnection();
 
@@ -392,9 +422,119 @@ router.put(
 );
 
 
-module.exports = router;
+
+// GET notices submitted by the logged-in society
+router.get(
+    '/mine',
+    authenticateToken,
+    authorizeRoles('Society', 'Faculty'),
+    async (req, res) => {
+        try {
+            const [notices] = await pool.query(
+                `
+                SELECT
+                    n.Notice_ID,
+                    n.Title,
+                    n.Body_Content,
+                    n.Priority,
+                    n.Status,
+                    n.Expiry_Date,
+                    n.Rejection_Reason,
+                    n.Created_By,
+                    c.Category_Name,
+                    GROUP_CONCAT(
+                        DISTINCT CONCAT(
+                            COALESCE(d.Dept_Name, 'All Departments'),
+                            ' - ',
+                            COALESCE(nt.Target_Semester, 'All Semesters')
+                        )
+                        SEPARATOR ', '
+                    ) AS Targets
+                FROM NOTICE n
+                JOIN CATEGORY c
+                    ON n.Category_ID = c.Category_ID
+                LEFT JOIN NOTICE_TARGET nt
+                    ON n.Notice_ID = nt.Notice_ID
+                LEFT JOIN DEPARTMENT d
+                    ON nt.Dept_ID = d.Dept_ID
+                WHERE n.Created_By = ?
+                GROUP BY n.Notice_ID
+                ORDER BY n.Notice_ID DESC
+                `,
+                [req.user.userId]
+            );
+
+            res.json({
+                success: true,
+                count: notices.length,
+                notices
+            });
+
+        } catch (error) {
+            console.error('Society notices error:', error);
+
+            res.status(500).json({
+                success: false,
+                message: 'Could not retrieve your notices'
+            });
+        }
+    }
+);
 
 
+// GET categories and departments for Society notice submission
+router.get(
+    '/options',
+    authenticateToken,
+    authorizeRoles('Society', 'Faculty'),
+    async (req, res) => {
+        try {
+            const [categories] = await pool.query(
+                `SELECT Category_ID, Category_Name
+                 FROM CATEGORY
+                 ORDER BY Category_Name`
+            );
+
+           let departments;
+
+if (req.user.role === 'Faculty') {
+    const [facultyDepartments] = await pool.query(
+        `SELECT d.Dept_ID, d.Dept_Name
+         FROM FACULTY_PROFILE f
+         JOIN DEPARTMENT d
+             ON f.Dept_ID = d.Dept_ID
+         WHERE f.Faculty_ID = ?`,
+        [req.user.userId]
+    );
+
+    departments = facultyDepartments;
+
+} else {
+    const [allDepartments] = await pool.query(
+        `SELECT Dept_ID, Dept_Name
+         FROM DEPARTMENT
+         ORDER BY Dept_Name`
+    );
+
+    departments = allDepartments;
+}
+
+            res.json({
+                success: true,
+                categories,
+                departments
+            });
+
+        } catch (error) {
+            console.error('Options fetch error:', error);
+
+            res.status(500).json({
+                success: false,
+                message: 'Could not fetch categories and departments'
+            });
+        }
+    }
+);
 
 // GET notices relevant to a particular student
 router.get('/student/:studentId', authenticateToken, async (req, res) => {
@@ -468,3 +608,5 @@ router.get('/student/:studentId', authenticateToken, async (req, res) => {
         });
     }
 });
+
+module.exports = router;
